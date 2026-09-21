@@ -12,7 +12,20 @@ export interface LogRecord {
 // Wired globally into every request (see server.ts) — must never throw or
 // every other challenge's tests break too. Implement real structured
 // logging here (see Challenge 10) without changing that contract.
-export default function structuredLogging(_req: Request, _res: Response, next: NextFunction): void {
-  // TODO(Challenge 10): log one JSON LogRecord per request on response finish.
+export default function structuredLogging(req: Request, res: Response, next: NextFunction): void {
+  const startedAt = Date.now();
+
+  res.once("finish", () => {
+    const record: LogRecord = {
+      timestamp: new Date(Date.now()).toISOString(),
+      method: req.method,
+      path: req.path,
+      actor: req.principal?.accountId ?? null,
+      status: res.statusCode,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    };
+    console.log(JSON.stringify(record));
+  });
+
   next();
 }
