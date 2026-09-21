@@ -20,6 +20,7 @@ interface Position {
   bal: bigint;
 }
 
+/** Exact zero-sum partition when the nonzero participant count is at most this. */
 const EXACT_LIMIT = 14;
 
 function validateObligation(o: Obligation): void {
@@ -87,10 +88,17 @@ function settleGreedy(positions: readonly Position[], asset: string): Transfer[]
   return transfers;
 }
 
+function groupKey(mask: number): string {
+  const parts: number[] = [];
+  for (let i = 0, m = mask; m !== 0; i += 1, m >>= 1) {
+    if (m & 1) parts.push(i);
+  }
+  return parts.join(",");
+}
+
 /**
  * Maximum number of disjoint zero-sum groups via submask DP (accounts pre-sorted by id).
- * Also records, for each zero-sum mask, the lexicographically smallest first group submask
- * that achieves the optimum (by sorted-id key, then by submask value).
+ * Records the lexicographically smallest first group for each zero-sum mask.
  */
 function maxPartition(balances: readonly bigint[]): { best: Int32Array; firstGroup: Int32Array } {
   const n = balances.length;
@@ -115,7 +123,7 @@ function maxPartition(balances: readonly bigint[]): { best: Int32Array; firstGro
     const low = mask & -mask;
     const rest = mask ^ low;
     let top = 0;
-    let chosen = mask; // whole mask as one group
+    let chosen = mask;
     let chosenKey: string | null = null;
 
     for (let sub = rest; ; sub = (sub - 1) & rest) {
@@ -127,9 +135,8 @@ function maxPartition(balances: readonly bigint[]): { best: Int32Array; firstGro
           chosen = group;
           chosenKey = null;
         } else if (candidate === top) {
-          // Prefer lexicographically smallest group by member indices (accounts are id-sorted).
-          const key = groupKey(group, n);
-          if (chosenKey === null) chosenKey = groupKey(chosen, n);
+          const key = groupKey(group);
+          if (chosenKey === null) chosenKey = groupKey(chosen);
           if (key < chosenKey || (key === chosenKey && group < chosen)) {
             chosen = group;
             chosenKey = key;
@@ -145,34 +152,18 @@ function maxPartition(balances: readonly bigint[]): { best: Int32Array; firstGro
   return { best, firstGroup };
 }
 
-function groupKey(mask: number, _n: number): string {
-  const parts: number[] = [];
-  for (let i = 0, m = mask; m !== 0; i += 1, m >>= 1) {
-    if (m & 1) parts.push(i);
-  }
-  return parts.join(",");
-}
-
 function settleExact(positions: Position[], asset: string): Transfer[] {
   const ordered = [...positions].filter((p) => p.bal !== 0n).sort((a, b) => cmpId(a.id, b.id));
   const n = ordered.length;
   if (n === 0) return [];
-  if (n === 1) {
-    // Should not happen for a conserved book; treat as nothing to settle.
-    return [];
-  }
-  if (n > EXACT_LIMIT) {
-    return settleGreedy(ordered, asset);
-  }
+  if (n === 1) return [];
+  if (n > EXACT_LIMIT) return settleGreedy(ordered, asset);
 
   const balances = ordered.map((p) => p.bal);
   const { best, firstGroup } = maxPartition(balances);
   const full = (1 << n) - 1;
-  if (best[full]! <= 0) {
-    return settleGreedy(ordered, asset);
-  }
+  if (best[full]! <= 0) return settleGreedy(ordered, asset);
 
-  const transfers: Transfer[] = [];
   const groups: number[] = [];
   let mask = full;
   while (mask !== 0) {
@@ -181,13 +172,13 @@ function settleExact(positions: Position[], asset: string): Transfer[] {
     mask ^= group;
   }
 
-  // Peel groups in lexicographic order of their member-id keys for stable transfer ordering.
   groups.sort((a, b) => {
-    const ka = groupKey(a, n);
-    const kb = groupKey(b, n);
+    const ka = groupKey(a);
+    const kb = groupKey(b);
     return ka < kb ? -1 : ka > kb ? 1 : a - b;
   });
 
+  const transfers: Transfer[] = [];
   for (const group of groups) {
     const members: Position[] = [];
     for (let i = 0; i < n; i += 1) {
@@ -195,7 +186,6 @@ function settleExact(positions: Position[], asset: string): Transfer[] {
     }
     transfers.push(...settleGreedy(members, asset));
   }
-
   return transfers;
 }
 
@@ -238,6 +228,23 @@ function connectedComponents(accounts: readonly string[], edges: readonly [strin
   return [...buckets.values()];
 }
 
+/** Large-scale path: settle each obligation-graph component independently (≤ n-1 each). */
+function settleByComponents(nets: Map<string, bigint>, edges: readonly [string, string][], asset: string): Transfer[] {
+  const accounts = [...nets.keys()].sort(cmpId);
+  const components = connectedComponents(accounts, edges);
+  const transfers: Transfer[] = [];
+  for (const members of components) {
+    const positions: Position[] = [];
+    for (const id of members) {
+      const bal = nets.get(id) ?? 0n;
+      if (bal !== 0n) positions.push({ id, bal });
+    }
+    if (positions.length === 0) continue;
+    transfers.push(...settleGreedy(positions, asset));
+  }
+  return transfers;
+}
+
 function netAsset(obligations: readonly Obligation[], asset: string): Transfer[] {
   const nets = new Map<string, bigint>();
   const edgeList: [string, string][] = [];
@@ -248,19 +255,15 @@ function netAsset(obligations: readonly Obligation[], asset: string): Transfer[]
     edgeList.push([o.from, o.to]);
   }
 
-  const accounts = [...nets.keys()].sort(cmpId);
-  const components = connectedComponents(accounts, edgeList);
-  const transfers: Transfer[] = [];
-
-  for (const members of components) {
-    const positions: Position[] = [];
-    for (const id of members) {
-      const bal = nets.get(id) ?? 0n;
-      if (bal !== 0n) positions.push({ id, bal });
-    }
-    if (positions.length === 0) continue;
-    transfers.push(...settleExact(positions, asset));
+  const positions: Position[] = [];
+  for (const [id, bal] of nets) {
+    if (bal !== 0n) positions.push({ id, bal });
   }
+
+  const transfers =
+    positions.length <= EXACT_LIMIT
+      ? settleExact(positions, asset)
+      : settleByComponents(nets, edgeList, asset);
 
   transfers.sort(cmpTransfer);
   return transfers;

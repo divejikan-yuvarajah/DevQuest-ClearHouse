@@ -1,6 +1,8 @@
 import express, { type ErrorRequestHandler } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import assetsRoutes from "./routes/assetsRoutes.js";
 import secureRoutes from "./routes/secureRoutes.js";
@@ -24,6 +26,18 @@ import rateLimit from "./middleware/rateLimit.js";
 import metrics from "./services/metrics.js";
 import { startLiveHub } from "./services/liveHub.js";
 import db from "../db/db-config.js";
+
+const clientRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "client");
+
+/** Same-origin dashboard only: scripts/styles/connect; API routes keep default-src 'none'. */
+const DASHBOARD_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self' ws: wss:",
+  "font-src 'self'",
+].join("; ");
 
 dotenv.config();
 
@@ -67,6 +81,15 @@ apiRouter.use("/", docsRoutes);
 // is not swallowed as an unknown unversioned path, and /api/v2/... still 404s.
 app.use("/api/v1", apiRouter);
 app.use("/api", apiRouter);
+
+// Operator dashboard (Challenge 12/17/20): served over HTTP so modules/fetch/WS share API origin.
+app.use(
+  express.static(clientRoot, {
+    setHeaders(res) {
+      res.setHeader("Content-Security-Policy", DASHBOARD_CSP);
+    },
+  }),
+);
 
 const notFound: express.RequestHandler = (_req, res) => {
   res.status(404).json({ error: { code: "NOT_FOUND", details: [] } });

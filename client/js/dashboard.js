@@ -17,9 +17,52 @@ function textEl(doc, tag, text) {
  * @param {string} state
  * @param {string} [message]
  */
+function defaultConnectionNote(status) {
+  if (status === "reconnecting") return "Reconnecting to the live feed…";
+  if (status === "stopped") return "Live feed stopped";
+  if (status === "stale") return "Live feed is stale";
+  return "Live feed status changed";
+}
+
+function removeStaleNotes(section) {
+  for (const note of [...section.querySelectorAll(".stale-note")]) {
+    note.remove();
+  }
+}
+
+function ensureStaleNote(doc, section, text) {
+  let note = section.querySelector(".stale-note");
+  if (!note) {
+    note = doc.createElement("p");
+    note.className = "stale-note";
+    section.insertBefore(note, section.firstChild);
+  }
+  note.textContent = text;
+}
+
 export function setStatus(doc, sectionId, state, message) {
   const section = doc.getElementById(sectionId);
   if (!section) return;
+
+  if (state === "stale" || state === "reconnecting") {
+    section.dataset.state = state;
+    section.setAttribute("aria-busy", "false");
+    section.removeAttribute("role");
+    ensureStaleNote(
+      doc,
+      section,
+      typeof message === "string" && message.length > 0 ? message : defaultConnectionNote(state),
+    );
+    return;
+  }
+
+  if (state === "ready") {
+    section.dataset.state = "ready";
+    section.setAttribute("aria-busy", "false");
+    section.removeAttribute("role");
+    removeStaleNotes(section);
+    return;
+  }
 
   section.dataset.state = state;
   clearChildren(section);
@@ -483,8 +526,58 @@ export function renderRecentTrades(doc, trades) {
   section.appendChild(list);
 }
 
-export function setConnectionStatus(_doc, _status) {
-  throw new Error("setConnectionStatus is not implemented yet.");
+const CONNECTION_PANELS = ["balance-view", "orderbook-view", "risk-view"];
+
+function isProtectedPanelState(state) {
+  return state === "loading" || state === "empty" || state === "error";
+}
+
+function connectionBannerText(status) {
+  switch (status) {
+    case "connecting":
+      return "Connecting…";
+    case "live":
+      return "Live";
+    case "stale":
+      return "Live feed is stale";
+    case "reconnecting":
+      return "Reconnecting…";
+    case "stopped":
+      return "Live feed stopped";
+    default:
+      return status;
+  }
+}
+
+export function setConnectionStatus(doc, status) {
+  const banner = doc.getElementById("connection-status");
+  if (banner) {
+    banner.dataset.state = status;
+    banner.textContent = connectionBannerText(status);
+  }
+
+  if (status === "connecting") return;
+
+  let panelState = null;
+  if (status === "stale" || status === "stopped") panelState = "stale";
+  else if (status === "reconnecting") panelState = "reconnecting";
+  else if (status === "live") panelState = "ready";
+  if (!panelState) return;
+
+  for (const id of CONNECTION_PANELS) {
+    const section = doc.getElementById(id);
+    if (!section) continue;
+    const current = section.dataset.state || "";
+    if (isProtectedPanelState(current)) continue;
+    if (current !== "ready" && current !== "stale" && current !== "reconnecting") continue;
+
+    if (panelState === "ready") {
+      setStatus(doc, id, "ready");
+    } else {
+      const noteKey = panelState === "stale" && status === "stopped" ? "stopped" : panelState;
+      setStatus(doc, id, panelState, defaultConnectionNote(noteKey));
+    }
+  }
 }
 
 /**

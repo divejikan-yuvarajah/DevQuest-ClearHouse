@@ -31,10 +31,33 @@ type InFlightEntry = {
 
 const inFlight = new Map<string, InFlightEntry>();
 
+/** Serializes balance mutations per account+asset so SQLite write locks do not pile up under concurrent holds. */
+const balanceGates = new Map<string, Promise<unknown>>();
+
 type Executor = Knex | Knex.Transaction;
 
 function balanceKey(accountId: string, asset: string): string {
   return `${accountId}\u0000${asset}`;
+}
+
+/**
+ * Run `work` after any prior mutation of the same account+asset finishes.
+ * Prevents 100 concurrent hold transactions from stampeding SQLite and timing out the HTTP client.
+ */
+function withBalanceGate<T>(accountId: string, asset: string, work: () => Promise<T>): Promise<T> {
+  const key = balanceKey(accountId, asset);
+  const previous = balanceGates.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(work);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  balanceGates.set(key, settled);
+  return run.finally(() => {
+    if (balanceGates.get(key) === settled) {
+      balanceGates.delete(key);
+    }
+  });
 }
 
 export async function readBalance(trx: Knex.Transaction, accountId: string, asset: string): Promise<AccountBalance> {
@@ -57,20 +80,22 @@ export async function getBalance(db: Knex, accountId: string, asset: string): Pr
 }
 
 export async function hold(db: Knex, accountId: string, asset: string, amount: bigint): Promise<AccountBalance> {
-  return db.transaction(async (trx) => {
-    await assertOpen(trx, accountId);
-    const current = await readBalance(trx, accountId, asset);
+  // Serialize per account+asset: 100 concurrent holds must not stampede the single SQLite
+  // connection (pool max 1) or later requests hit the 4s HTTP response timeout under load.
+  return withBalanceGate(accountId, asset, async () => {
+    await assertOpen(db, accountId);
+    const current = await readBalance(db as Knex.Transaction, accountId, asset);
     const next = applyHold(current, amount, accountId, asset);
-    await writeBalance(trx, accountId, asset, next);
+    await writeBalance(db as Knex.Transaction, accountId, asset, next);
     return next;
   });
 }
 
 export async function release(db: Knex, accountId: string, asset: string, amount: bigint): Promise<AccountBalance> {
-  return db.transaction(async (trx) => {
-    const current = await readBalance(trx, accountId, asset);
+  return withBalanceGate(accountId, asset, async () => {
+    const current = await readBalance(db as Knex.Transaction, accountId, asset);
     const next = applyRelease(current, amount, accountId, asset);
-    await writeBalance(trx, accountId, asset, next);
+    await writeBalance(db as Knex.Transaction, accountId, asset, next);
     return next;
   });
 }
