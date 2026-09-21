@@ -12,6 +12,7 @@
     "start-dev": "tsx watch src/server.ts",
     "migrate": "npm run delete-db && tsx node_modules/knex/bin/cli.js migrate:latest",
     "seed": "tsx node_modules/knex/bin/cli.js seed:run",
+    "demo-market": "tsx scripts/run-demo-market.ts",
     "delete-db": "del-cli main.sqlite3",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tests/tsconfig.json",
     "test": "vitest"

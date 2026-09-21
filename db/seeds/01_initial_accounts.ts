@@ -2,7 +2,7 @@ import type { Knex } from "knex";
 import { insertBalancedEntry } from "../../src/repositories/ledgerRepository.js";
 
 /**
- * Deterministic demo funding for Challenge 20a.
+ * Deterministic demo funding for Challenge 20a / competition presentation.
  *
  * Trading accounts are type "asset". Funding is real double-entry:
  *   +amount on the trading account (debit)
@@ -10,8 +10,15 @@ import { insertBalancedEntry } from "../../src/repositories/ledgerRepository.js"
  * for the same asset, then account_balances.available is set to match the
  * trading account's posting sum. held starts at 0.
  *
+ * Holds and closed zero-balance accounts are intentionally omitted: Challenge
+ * 20a-1 requires every asset account to have ≥2 funded assets, and 20a-2
+ * requires available ≡ posting sum (holds would break that equality).
+ *
  * Idempotency: stable UUIDs + skip funding when a posting already exists for
  * that trading account + asset. Never truncate or rebuild.
+ *
+ * In-memory matching / WebSocket state is NOT seeded here — see
+ * `src/demo/bootstrapDemoMarket.ts` (CLEARHOUSE_DEMO_MARKET=1).
  */
 
 const HOUSE_ID = "a0000000-0000-4000-8000-000000000001";
@@ -28,47 +35,72 @@ interface DemoTrader {
   holdings: readonly Holding[];
 }
 
+/**
+ * Minor-unit targets (exact BigInt — no floats):
+ * USD/EUR exponent 2, JPY 0, BHD 3, BTC 8.
+ */
 const DEMO_TRADERS: readonly DemoTrader[] = [
   {
     id: "a0000000-0000-4000-8000-000000000101",
-    name: "Aurora Capital",
+    name: "Atlas Capital",
     holdings: [
       { asset: "USD", available: 250_000_00n },
-      { asset: "BTC", available: 150_000_000n },
-    ],
-  },
-  {
-    id: "a0000000-0000-4000-8000-000000000102",
-    name: "Beacon Markets",
-    holdings: [
-      { asset: "EUR", available: 180_000_00n },
-      { asset: "USD", available: 90_000_00n },
-      { asset: "BTC", available: 75_000_000n },
-    ],
-  },
-  {
-    id: "a0000000-0000-4000-8000-000000000103",
-    name: "Cascade Securities",
-    holdings: [
-      { asset: "JPY", available: 12_500_000n },
-      { asset: "USD", available: 40_000_00n },
-    ],
-  },
-  {
-    id: "a0000000-0000-4000-8000-000000000104",
-    name: "Delta Desk",
-    holdings: [
-      { asset: "BHD", available: 5_000_000n },
+      { asset: "BTC", available: 1_250_000_000n }, // 12.5 BTC
       { asset: "EUR", available: 75_000_00n },
     ],
   },
   {
-    id: "a0000000-0000-4000-8000-000000000105",
-    name: "Evergreen Trading",
+    id: "a0000000-0000-4000-8000-000000000102",
+    name: "Nova Securities",
     holdings: [
-      { asset: "BTC", available: 2_500_000_00n },
-      { asset: "USD", available: 500_000_00n },
-      { asset: "JPY", available: 3_000_000n },
+      { asset: "USD", available: 180_000_00n },
+      { asset: "BTC", available: 425_000_000n }, // 4.25 BTC
+      { asset: "JPY", available: 8_500_000n },
+    ],
+  },
+  {
+    id: "a0000000-0000-4000-8000-000000000103",
+    name: "Meridian Markets",
+    holdings: [
+      { asset: "USD", available: 320_000_00n },
+      { asset: "EUR", available: 125_000_00n },
+      { asset: "BHD", available: 18_500_000n }, // 18,500.000
+    ],
+  },
+  {
+    id: "a0000000-0000-4000-8000-000000000104",
+    name: "Orion Trading",
+    holdings: [
+      { asset: "USD", available: 145_000_00n },
+      { asset: "BTC", available: 775_000_000n }, // 7.75 BTC
+      { asset: "JPY", available: 5_000_000n },
+    ],
+  },
+  {
+    id: "a0000000-0000-4000-8000-000000000105",
+    name: "Vertex Financial",
+    holdings: [
+      { asset: "USD", available: 210_000_00n },
+      { asset: "EUR", available: 95_000_00n },
+      { asset: "BTC", available: 250_000_000n }, // 2.5 BTC
+    ],
+  },
+  {
+    id: "a0000000-0000-4000-8000-000000000106",
+    name: "Cobalt Partners",
+    holdings: [
+      { asset: "EUR", available: 110_000_00n },
+      { asset: "BHD", available: 22_000_000n },
+      { asset: "USD", available: 130_000_00n },
+    ],
+  },
+  {
+    id: "a0000000-0000-4000-8000-000000000107",
+    name: "Summit Brokerage",
+    holdings: [
+      { asset: "USD", available: 275_000_00n },
+      { asset: "JPY", available: 11_000_000n },
+      { asset: "BTC", available: 600_000_000n }, // 6.0 BTC
     ],
   },
 ];
@@ -79,8 +111,16 @@ async function ensureAccount(
   type: string,
   name: string,
 ): Promise<void> {
-  const existing = await trx("accounts").where({ id }).first("id");
-  if (existing) return;
+  const existing = await trx("accounts").where({ id }).first("id", "name");
+  if (existing) {
+    if (existing.name === name) return;
+    const patch: Record<string, string> = { name };
+    if (await trx.schema.hasColumn("accounts", "normalized_name")) {
+      patch.normalized_name = name.trim().toLowerCase();
+    }
+    await trx("accounts").where({ id }).update(patch);
+    return;
+  }
 
   const row: Record<string, string> = {
     id,
@@ -105,7 +145,6 @@ async function setTradingAvailable(
   const existing = await trx("account_balances").where({ account_id: accountId, asset }).first();
   const values = { available: available.toString(), held: "0" };
   if (existing) {
-    // Only repair when the projection drifted; avoid no-op churn on re-seed.
     if (existing.available === values.available && existing.held === values.held) return;
     await trx("account_balances").where({ account_id: accountId, asset }).update(values);
   } else {
@@ -121,7 +160,6 @@ async function fundIfMissing(
 ): Promise<void> {
   const alreadyPosted = await trx("postings").where({ account_id: tradingId, asset }).first("id");
   if (alreadyPosted) {
-    // Keep projection aligned with existing postings without creating new entries.
     const rows = await trx("postings").where({ account_id: tradingId, asset }).select("amount");
     let sum = 0n;
     for (const row of rows) sum += BigInt(row.amount);

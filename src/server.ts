@@ -25,6 +25,7 @@ import structuredLogging from "./middleware/logging.js";
 import rateLimit from "./middleware/rateLimit.js";
 import metrics from "./services/metrics.js";
 import { startLiveHub } from "./services/liveHub.js";
+import { bootstrapDemoMarket } from "./demo/bootstrapDemoMarket.js";
 import db from "../db/db-config.js";
 
 const clientRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "client");
@@ -134,5 +135,9 @@ const server =
       });
 
 startLiveHub(server);
+
+if (process.env.CLEARHOUSE_DEMO_MARKET === "1" && process.env.NODE_ENV !== "test") {
+  bootstrapDemoMarket();
+}
 
 export default server;

@@ -18,9 +18,9 @@ function textEl(doc, tag, text) {
  * @param {string} [message]
  */
 function defaultConnectionNote(status) {
-  if (status === "reconnecting") return "Reconnecting to the live feed…";
-  if (status === "stopped") return "Live feed stopped";
-  if (status === "stale") return "Live feed is stale";
+  if (status === "reconnecting") return "Live feed reconnecting — showing last known market state";
+  if (status === "stopped") return "Live feed stopped — showing last known market state";
+  if (status === "stale") return "Live feed is stale — showing last known market state";
   return "Live feed status changed";
 }
 
@@ -79,6 +79,12 @@ export function setStatus(doc, sectionId, state, message) {
   }
 
   if (typeof message === "string" && message.length > 0) {
+    if (state === "empty") {
+      const illus = doc.createElement("div");
+      illus.className = "empty-illustration";
+      illus.setAttribute("aria-hidden", "true");
+      section.appendChild(illus);
+    }
     section.appendChild(textEl(doc, "p", message));
   }
 }
@@ -107,6 +113,7 @@ export function renderBalance(doc, balances) {
   markReady(section);
 
   const table = doc.createElement("table");
+  table.className = "balance-table";
   table.appendChild(textEl(doc, "caption", "Account balances"));
 
   const thead = doc.createElement("thead");
@@ -122,10 +129,22 @@ export function renderBalance(doc, balances) {
   const tbody = doc.createElement("tbody");
   for (const row of balances) {
     const tr = doc.createElement("tr");
-    tr.appendChild(textEl(doc, "td", String(row.asset ?? "")));
-    tr.appendChild(textEl(doc, "td", String(row.available ?? "")));
-    tr.appendChild(textEl(doc, "td", String(row.held ?? "")));
-    tr.appendChild(textEl(doc, "td", String(row.total ?? "")));
+    const asset = textEl(doc, "td", String(row.asset ?? ""));
+    asset.className = "bal-asset";
+    tr.appendChild(asset);
+
+    const available = textEl(doc, "td", String(row.available ?? ""));
+    available.className = "bal-available";
+    tr.appendChild(available);
+
+    const held = textEl(doc, "td", String(row.held ?? ""));
+    held.className = "bal-held";
+    tr.appendChild(held);
+
+    const total = textEl(doc, "td", String(row.total ?? ""));
+    total.className = "bal-total";
+    tr.appendChild(total);
+
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -175,9 +194,25 @@ function renderSide(doc, levels, sideClass) {
   const visible = sorted.slice(0, 10);
   const hidden = sorted.length - visible.length;
 
+  const head = doc.createElement("header");
+  head.className = "ob-cols";
+  head.setAttribute("aria-hidden", "true");
+  head.appendChild(textEl(doc, "span", "Price"));
+  head.appendChild(textEl(doc, "span", "Quantity"));
+  container.appendChild(head);
+
   visible.forEach((level, index) => {
-    const row = textEl(doc, "div", `${level.price} x ${level.quantity}`);
+    const row = doc.createElement("div");
     if (index === 0) row.classList.add("best");
+
+    const price = textEl(doc, "span", String(level.price ?? ""));
+    price.className = "ob-price";
+    row.appendChild(price);
+    row.appendChild(doc.createTextNode(" x "));
+    const qty = textEl(doc, "span", String(level.quantity ?? ""));
+    qty.className = "ob-qty";
+    row.appendChild(qty);
+
     container.appendChild(row);
   });
 
@@ -188,6 +223,33 @@ function renderSide(doc, levels, sideClass) {
   }
 
   return container;
+}
+
+/**
+ * Exact integer-string spread only — never uses floating Number math.
+ * @param {Document} doc
+ * @param {Array<{ price: string, quantity: string }>} bids
+ * @param {Array<{ price: string, quantity: string }>} asks
+ * @returns {HTMLElement | null}
+ */
+function renderSpreadDivider(doc, bids, asks) {
+  if (bids.length === 0 || asks.length === 0) return null;
+  const bestBid = sortLevels(bids, true)[0];
+  const bestAsk = sortLevels(asks, false)[0];
+  const bid = parsePrice(bestBid?.price ?? "");
+  const ask = parsePrice(bestAsk?.price ?? "");
+  if (bid === null || ask === null || ask < bid) return null;
+
+  const el = doc.createElement("div");
+  el.className = "ob-spread";
+  el.setAttribute("aria-hidden", "true");
+  const label = textEl(doc, "span", "Spread");
+  label.className = "ob-spread-label";
+  const value = textEl(doc, "span", (ask - bid).toString());
+  value.className = "ob-spread-value";
+  el.appendChild(label);
+  el.appendChild(value);
+  return el;
 }
 
 /**
@@ -209,6 +271,8 @@ export function renderOrderBook(doc, book) {
 
   markReady(section);
   if (bids.length > 0) section.appendChild(renderSide(doc, bids, "bids"));
+  const spread = renderSpreadDivider(doc, bids, asks);
+  if (spread) section.appendChild(spread);
   if (asks.length > 0) section.appendChild(renderSide(doc, asks, "asks"));
 }
 
@@ -224,6 +288,7 @@ export function renderRiskState(doc, risk) {
   markReady(section);
 
   const list = doc.createElement("dl");
+  list.className = "risk-state-list";
   list.appendChild(textEl(doc, "dt", "Open orders"));
   list.appendChild(textEl(doc, "dd", String(risk?.openOrderCount ?? "")));
   list.appendChild(textEl(doc, "dt", "Committed exposure"));
@@ -318,7 +383,26 @@ export function renderAccountList(doc, accounts, assets) {
     const row = doc.createElement("article");
     row.dataset.accountId = String(account.id ?? "");
 
-    row.appendChild(textEl(doc, "span", String(account.name ?? "")));
+    const name = String(account.name ?? "");
+    const initial = doc.createElement("span");
+    initial.className = "account-initial";
+    initial.setAttribute("aria-hidden", "true");
+    const glyph = name.trim().charAt(0);
+    initial.textContent = glyph ? glyph.toUpperCase() : "?";
+    row.appendChild(initial);
+
+    const identity = doc.createElement("div");
+    identity.className = "account-identity";
+    const nameEl = textEl(doc, "span", name);
+    nameEl.className = "account-name";
+    identity.appendChild(nameEl);
+    const idValue = String(account.id ?? "");
+    if (idValue) {
+      const idEl = textEl(doc, "span", idValue);
+      idEl.className = "account-id";
+      identity.appendChild(idEl);
+    }
+    row.appendChild(identity);
 
     const statusValue = String(account.status ?? "");
     const badge = doc.createElement("span");
@@ -336,12 +420,30 @@ export function renderAccountList(doc, accounts, assets) {
       for (const balance of balances) {
         const asset = String(balance.asset ?? "");
         const exponent = exponents.get(asset);
-        const amount =
-          typeof exponent === "number"
-            ? formatMinorUnits(String(balance.total ?? "0"), exponent)
-            : String(balance.total ?? "0");
-        const item = textEl(doc, "li", `${asset} ${amount}`);
-        item.dataset.asset = asset;
+        const totalRaw = String(balance.total ?? "0");
+        const availableRaw = String(balance.available ?? "0");
+        const heldRaw = String(balance.held ?? "0");
+        const total =
+          typeof exponent === "number" ? formatMinorUnits(totalRaw, exponent) : totalRaw;
+        const available =
+          typeof exponent === "number" ? formatMinorUnits(availableRaw, exponent) : availableRaw;
+        const held =
+          typeof exponent === "number" ? formatMinorUnits(heldRaw, exponent) : heldRaw;
+
+        const item = doc.createElement("li");
+        item.className = "holding-chip";
+
+        const totalEl = textEl(doc, "span", `${asset} ${total}`);
+        totalEl.dataset.asset = asset;
+        totalEl.className = "holding-total";
+        item.appendChild(totalEl);
+
+        const breakdown = doc.createElement("span");
+        breakdown.className = "holding-breakdown";
+        breakdown.appendChild(textEl(doc, "span", `Avail ${available}`));
+        breakdown.appendChild(textEl(doc, "span", `Held ${held}`));
+        item.appendChild(breakdown);
+
         holdings.appendChild(item);
       }
     }
@@ -437,21 +539,38 @@ function usageLevel(percent) {
  */
 function appendRiskMeter(doc, section, key, label, used, limit) {
   const percent = usagePercent(used, limit);
+  const level = usageLevel(percent);
   const meter = doc.createElement("div");
   meter.dataset.meter = key;
-  meter.dataset.level = usageLevel(percent);
+  meter.dataset.level = level;
 
-  meter.appendChild(textEl(doc, "span", label));
+  const head = doc.createElement("div");
+  head.className = "meter-head";
+  const labelEl = textEl(doc, "span", label);
+  labelEl.className = "meter-label";
+  head.appendChild(labelEl);
 
   const percentEl = textEl(doc, "span", `${percent}%`);
   percentEl.className = "percent";
-  meter.appendChild(percentEl);
+  head.appendChild(percentEl);
+  meter.appendChild(head);
+
+  const figures = doc.createElement("div");
+  figures.className = "meter-figures";
+  figures.appendChild(textEl(doc, "span", `Used ${used.toString()}`));
+  figures.appendChild(textEl(doc, "span", `Limit ${limit.toString()}`));
+  meter.appendChild(figures);
 
   const progress = doc.createElement("progress");
   progress.max = 100;
   progress.value = Math.min(percent, 100);
   progress.setAttribute("aria-label", label);
   meter.appendChild(progress);
+
+  const statusText = level === "danger" ? "Danger" : level === "warning" ? "Warning" : "Normal";
+  const status = textEl(doc, "span", statusText);
+  status.className = "meter-status";
+  meter.appendChild(status);
 
   section.appendChild(meter);
 }
@@ -473,15 +592,28 @@ export function renderRiskUsage(doc, state, limits) {
   const maxOpenOrders = BigInt(limits?.maxOpenOrders ?? 0);
   const exposure = BigInt(String(state?.committedExposure ?? "0"));
   const maxNotional = BigInt(String(limits?.maxNotional ?? "0"));
+  const maxPositionAbs = BigInt(String(limits?.maxPositionAbs ?? "0"));
+  const absExposure = exposure < 0n ? -exposure : exposure;
 
   appendRiskMeter(doc, section, "orders", "Open orders", openOrders, maxOpenOrders);
   appendRiskMeter(doc, section, "exposure", "Committed exposure", exposure, maxNotional);
+  appendRiskMeter(doc, section, "position", "Position absolute", absExposure, maxPositionAbs);
 }
 
 /**
- * trades: Array<{ market, buyOrderId, sellOrderId, price, quantity, timestampMs }>
+ * @param {string | null | undefined} value
+ * @returns {string}
+ */
+function shortenId(value) {
+  const id = String(value ?? "");
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+/**
+ * trades: Array<{ market, buyOrderId, sellOrderId, price, quantity, timestampMs, buyAccountId?, sellAccountId? }>
  * @param {Document} doc
- * @param {Array<{ market: string, buyOrderId: string, sellOrderId: string, price: string, quantity: string, timestampMs: number }>} trades
+ * @param {Array<{ market: string, buyOrderId: string, sellOrderId: string, price: string, quantity: string, timestampMs: number, buyAccountId?: string | null, sellAccountId?: string | null }>} trades
  */
 export function renderRecentTrades(doc, trades) {
   const section = doc.getElementById("activity-view");
@@ -503,22 +635,69 @@ export function renderRecentTrades(doc, trades) {
   const list = doc.createElement("ol");
   list.className = "recent-trades";
 
+  const head = doc.createElement("li");
+  head.className = "recent-trades-head";
+  head.setAttribute("aria-hidden", "true");
+  for (const label of ["Time", "Print", "Notional"]) {
+    head.appendChild(textEl(doc, "span", label));
+  }
+  list.appendChild(head);
+
   for (const trade of expected) {
     const item = doc.createElement("li");
     item.dataset.trade = "";
 
     const market = String(trade.market ?? "");
+    item.dataset.market = market;
     const quantity = String(trade.quantity ?? "");
     const price = String(trade.price ?? "");
-    item.appendChild(textEl(doc, "span", `${market} ${quantity} @ ${price}`));
+    if (typeof trade.buyAccountId === "string" && trade.buyAccountId) {
+      item.dataset.buyAccount = trade.buyAccountId;
+    }
+    if (typeof trade.sellAccountId === "string" && trade.sellAccountId) {
+      item.dataset.sellAccount = trade.sellAccountId;
+    }
+
+    const time = doc.createElement("time");
+    const iso = new Date(trade.timestampMs).toISOString();
+    time.setAttribute("datetime", iso);
+    time.textContent = iso.slice(11, 19) + "Z";
+    item.appendChild(time);
+
+    const body = doc.createElement("div");
+    body.className = "trade-body";
+
+    // Challenge 20c-4 requires this exact phrase in the row textContent.
+    const print = textEl(doc, "span", `${market} ${quantity} @ ${price}`);
+    print.className = "trade-print";
+    body.appendChild(print);
+
+    const buyAccount = trade.buyAccountId;
+    const sellAccount = trade.sellAccountId;
+    if ((typeof buyAccount === "string" && buyAccount) || (typeof sellAccount === "string" && sellAccount)) {
+      const parties = doc.createElement("span");
+      parties.className = "trade-parties";
+      if (typeof buyAccount === "string" && buyAccount) {
+        parties.appendChild(textEl(doc, "span", `Buy ${shortenId(buyAccount)}`));
+      }
+      if (typeof sellAccount === "string" && sellAccount) {
+        parties.appendChild(textEl(doc, "span", `Sell ${shortenId(sellAccount)}`));
+      }
+      body.appendChild(parties);
+    } else if (trade.buyOrderId || trade.sellOrderId) {
+      const orders = doc.createElement("span");
+      orders.className = "trade-orders";
+      if (trade.buyOrderId) orders.appendChild(textEl(doc, "span", `Buy ord ${shortenId(trade.buyOrderId)}`));
+      if (trade.sellOrderId) orders.appendChild(textEl(doc, "span", `Sell ord ${shortenId(trade.sellOrderId)}`));
+      body.appendChild(orders);
+    }
+
+    item.appendChild(body);
 
     const notional = textEl(doc, "span", (BigInt(price) * BigInt(quantity)).toString());
     notional.dataset.notional = "";
+    notional.className = "trade-notional";
     item.appendChild(notional);
-
-    const time = doc.createElement("time");
-    time.setAttribute("datetime", new Date(trade.timestampMs).toISOString());
-    item.appendChild(time);
 
     list.appendChild(item);
   }
@@ -535,17 +714,38 @@ function isProtectedPanelState(state) {
 function connectionBannerText(status) {
   switch (status) {
     case "connecting":
-      return "Connecting…";
+      return "CONNECTING";
     case "live":
-      return "Live";
+      return "LIVE";
     case "stale":
-      return "Live feed is stale";
+      return "STALE";
     case "reconnecting":
-      return "Reconnecting…";
+      return "RECONNECTING";
     case "stopped":
-      return "Live feed stopped";
+      return "STOPPED";
     default:
       return status;
+  }
+}
+
+function syncMarketLiveBadge(doc, status) {
+  const badge = doc.getElementById("market-live-badge");
+  if (!badge) return;
+  badge.dataset.state = status;
+  badge.textContent = connectionBannerText(status);
+}
+
+function syncSidebarLive(doc, status) {
+  const live = doc.getElementById("sidebar-live");
+  const label = doc.getElementById("sidebar-live-label");
+  if (live) live.dataset.state = status;
+  if (label) {
+    if (status === "live") label.textContent = "Live infrastructure";
+    else if (status === "connecting") label.textContent = "Connecting";
+    else if (status === "reconnecting") label.textContent = "Reconnecting";
+    else if (status === "stale") label.textContent = "Stale feed";
+    else if (status === "stopped") label.textContent = "Feed stopped";
+    else label.textContent = connectionBannerText(status);
   }
 }
 
@@ -555,6 +755,8 @@ export function setConnectionStatus(doc, status) {
     banner.dataset.state = status;
     banner.textContent = connectionBannerText(status);
   }
+  syncMarketLiveBadge(doc, status);
+  syncSidebarLive(doc, status);
 
   if (status === "connecting") return;
 

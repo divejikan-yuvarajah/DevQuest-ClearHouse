@@ -1,39 +1,306 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="noir">
   <head>
     <meta charset="utf-8" />
-    <title>ClearHouse Operator Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClearHouse — Financial Operations Intelligence OS</title>
     <link rel="stylesheet" href="styles/dashboard.css" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("clearhouse-theme");
+          if (stored === "ivory" || stored === "noir" || stored === "ember") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
-    <h1>ClearHouse Operator Dashboard</h1>
-    <p id="connection-status" role="status" data-state="connecting">Connecting…</p>
+    <div class="app-shell" id="app-shell" data-view="overview" data-density="comfortable">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">CH</span>
+          <div class="brand-copy">
+            <p class="brand-name">ClearHouse</p>
+            <p class="brand-sub">Clearing Infrastructure</p>
+          </div>
+        </div>
 
-    <form id="login-form">
-      <label>Account ID <input type="text" id="login-account-id" required /></label>
-      <label>Role
-        <select id="login-role">
-          <option value="operator">operator</option>
-          <option value="admin">admin</option>
-        </select>
-      </label>
-      <label>HMAC secret <input type="password" id="login-secret" placeholder="optional for JWT demo" /></label>
-      <button type="submit">Sign in</button>
-    </form>
+        <nav class="sidebar-nav" aria-label="Operations">
+          <p class="nav-label">Operations</p>
+          <button type="button" class="nav-item" data-nav="overview" aria-current="page" title="Overview">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Overview
+          </button>
+          <button type="button" class="nav-item" data-nav="markets" title="Markets">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Markets
+          </button>
+          <button type="button" class="nav-item" data-nav="accounts" title="Accounts">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Accounts
+          </button>
+          <button type="button" class="nav-item" data-nav="activity" title="Activity">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Activity
+          </button>
+          <button type="button" class="nav-item" data-nav="risk" title="Risk & Balances">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Risk &amp; Balances
+          </button>
+        </nav>
 
-    <form id="controls-form">
-      <label>Market <input type="text" id="market-input" value="BTC-USD" /></label>
-      <button type="submit">Refresh</button>
-    </form>
+        <nav class="sidebar-nav" aria-label="Platform">
+          <p class="nav-label">Platform</p>
+          <a class="nav-item" href="/api/docs" title="API Docs">
+            <span class="nav-icon" aria-hidden="true"></span>
+            API Docs
+          </a>
+          <button type="button" class="nav-item" data-nav="health" title="System Health">
+            <span class="nav-icon" aria-hidden="true"></span>
+            System Health
+          </button>
+          <button type="button" class="nav-item" data-nav="metrics" title="Metrics">
+            <span class="nav-icon" aria-hidden="true"></span>
+            Metrics
+          </button>
+        </nav>
 
-    <section id="summary-view" aria-label="Portfolio summary"></section>
-    <section id="accounts-view" aria-label="Accounts"></section>
-    <section id="balance-view" aria-label="Account balance"></section>
-    <section id="risk-usage-view" aria-label="Risk usage"></section>
-    <section id="activity-view" aria-label="Recent trades"></section>
-    <section id="orderbook-view" aria-label="Order book"></section>
-    <section id="risk-view" aria-label="Risk state"></section>
+        <div class="sidebar-status">
+          <p id="env-status" data-state="unknown">Environment</p>
+        </div>
 
+        <div class="sidebar-footer">
+          <div class="sidebar-controls">
+            <button type="button" class="ghost-btn" id="sidebar-collapse-toggle" aria-pressed="false" aria-label="Collapse sidebar">Collapse</button>
+            <button type="button" class="ghost-btn" id="presentation-toggle" aria-pressed="false" aria-label="Toggle presentation mode">Present</button>
+          </div>
+          <div class="theme-switcher" role="group" aria-label="Theme">
+            <button type="button" id="theme-noir" data-theme-choice="noir" aria-pressed="true" aria-label="Zatroz Noir theme">Noir</button>
+            <button type="button" id="theme-ivory" data-theme-choice="ivory" aria-pressed="false" aria-label="Zatroz Ivory theme">Ivory</button>
+            <button type="button" id="theme-ember" data-theme-choice="ember" aria-pressed="false" aria-label="Zatroz Ember theme">Ember</button>
+          </div>
+          <p class="sidebar-live" id="sidebar-live" data-state="connecting">
+            <span class="sidebar-live-dot" aria-hidden="true"></span>
+            <span id="sidebar-live-label">Connecting</span>
+          </p>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="command-bar">
+          <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+          <div class="command-title">
+            <p class="eyebrow" id="page-eyebrow">ClearHouse / Overview</p>
+            <h1 id="page-title">Clearing Operations</h1>
+            <p class="page-lead" id="page-lead">Monitor accounts, exposure, market activity and settlement state in real time.</p>
+          </div>
+
+          <form id="controls-form">
+            <label>Market <input type="text" id="market-input" value="BTC-USD" spellcheck="false" /></label>
+            <button type="submit">Refresh</button>
+          </form>
+
+          <div class="command-tools">
+            <button type="button" class="ghost-btn" id="command-palette-open" aria-label="Open command palette" title="Ctrl+K">Commands</button>
+            <button type="button" class="ghost-btn" id="focus-toggle" aria-pressed="false" aria-label="Toggle market focus mode" hidden>Focus</button>
+            <button type="button" class="ghost-btn" id="density-toggle" aria-pressed="false" aria-label="Toggle compact table density">Compact</button>
+          </div>
+
+          <div class="operator-access" id="operator-access" data-session="idle">
+            <div class="operator-access-head">
+              <p class="operator-access-kicker">Operator Access</p>
+              <p class="operator-access-sub">Authenticate to access balances, risk and live market operations.</p>
+            </div>
+
+            <form id="login-form">
+              <label>Account ID <input type="text" id="login-account-id" required autocomplete="username" /></label>
+              <label>Role
+                <select id="login-role">
+                  <option value="operator">operator</option>
+                  <option value="admin">admin</option>
+                </select>
+              </label>
+              <label>HMAC secret <input type="password" id="login-secret" placeholder="optional for JWT demo" autocomplete="off" /></label>
+              <button type="submit">Sign in</button>
+            </form>
+
+            <div class="operator-session">
+              <p class="operator-session-kicker">Session</p>
+              <p id="operator-identity">Not signed in</p>
+              <dl class="operator-session-meta" aria-hidden="true">
+                <div>
+                  <dt>Account</dt>
+                  <dd id="operator-session-account">—</dd>
+                </div>
+                <div>
+                  <dt>Role</dt>
+                  <dd id="operator-session-role">—</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd id="operator-session-status">Idle</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </header>
+
+        <div class="status-strip" id="status-strip" aria-label="Operations status">
+          <p id="connection-status" role="status" data-state="connecting">Connecting…</p>
+          <div class="status-chip-static">
+            <span class="status-chip-label">Market</span>
+            <span id="strip-market" class="financial-value">BTC-USD</span>
+          </div>
+          <div class="status-chip-static">
+            <span class="status-chip-label">Accounts</span>
+            <span id="strip-accounts" class="financial-value">—</span>
+          </div>
+          <div class="status-chip-static">
+            <span class="status-chip-label">System</span>
+            <span id="strip-health" class="financial-value">—</span>
+          </div>
+          <div class="status-chip-static">
+            <span class="status-chip-label">Last refreshed</span>
+            <span id="strip-refreshed" class="financial-value">—</span>
+          </div>
+        </div>
+
+        <main class="dashboard">
+          <section id="summary-view" class="panel" aria-label="Portfolio summary"></section>
+
+          <div class="ops-panel" data-ops="accounts">
+            <div class="ops-panel-head">
+              <div>
+                <p class="ops-panel-kicker">Accounts</p>
+                <p class="ops-panel-desc">Funded trading accounts and exact holdings</p>
+              </div>
+              <button type="button" class="ops-panel-link" data-nav="accounts">Open</button>
+            </div>
+            <section id="accounts-view" class="panel" aria-label="Accounts"></section>
+          </div>
+
+          <div class="ops-panel" data-ops="activity">
+            <div class="ops-panel-head">
+              <div>
+                <p class="ops-panel-kicker">Recent trades</p>
+                <p class="ops-panel-desc">Recent executions with exact notional</p>
+              </div>
+              <button type="button" class="ops-panel-link" data-nav="activity">Open</button>
+            </div>
+            <section id="activity-view" class="panel" aria-label="Recent trades"></section>
+          </div>
+
+          <div class="ops-panel" data-ops="risk">
+            <div class="ops-panel-head">
+              <div>
+                <p class="ops-panel-kicker">Risk</p>
+                <p class="ops-panel-desc">Limit utilization for the signed-in account</p>
+              </div>
+              <button type="button" class="ops-panel-link" data-nav="risk">Open</button>
+            </div>
+            <section id="risk-usage-view" class="panel" aria-label="Risk usage"></section>
+            <div class="risk-legend" aria-label="Risk meter legend">
+              <span class="risk-legend-item"><span class="risk-legend-swatch" data-tone="ok" aria-hidden="true"></span>Normal</span>
+              <span class="risk-legend-item"><span class="risk-legend-swatch" data-tone="warning" aria-hidden="true"></span>Warning</span>
+              <span class="risk-legend-item"><span class="risk-legend-swatch" data-tone="danger" aria-hidden="true"></span>Danger</span>
+            </div>
+            <section id="risk-view" class="panel" aria-label="Risk state"></section>
+          </div>
+
+          <div id="risk-identity" class="risk-identity" hidden>
+            <p class="risk-kicker">Risk &amp; Balances</p>
+            <h2 id="risk-title">Risk control</h2>
+            <p class="risk-sub">Monitor limits, exposure and available collateral</p>
+            <div class="risk-account-selector">
+              <p class="risk-account-label">Signed-in account</p>
+              <p id="risk-selected-account" class="risk-selected-account">Sign in with an account ID to load balances and limits</p>
+            </div>
+            <dl class="risk-help" aria-label="Risk terminology">
+              <dt>Available</dt>
+              <dd>Balance not reserved against open exposure.</dd>
+              <dt>Held</dt>
+              <dd>Balance reserved for open orders or risk limits.</dd>
+              <dt>Risk usage</dt>
+              <dd>Current utilization versus configured account limits.</dd>
+              <dt>Warning / Danger</dt>
+              <dd>Usage at or above 80% warns; 100% is danger. Thresholds are system-defined.</dd>
+            </dl>
+          </div>
+
+          <p id="risk-closed-banner" class="risk-closed-banner" hidden role="status">
+            This account is closed. Balances and risk are shown for review only.
+          </p>
+
+          <div id="activity-identity" class="activity-identity" hidden>
+            <p class="activity-kicker">Activity</p>
+            <h2 id="activity-title">Execution tape</h2>
+            <p class="activity-sub">Recent executions and clearing activity</p>
+          </div>
+
+          <div class="activity-toolbar" id="activity-toolbar" hidden>
+            <label for="activity-filter">Filter trades
+              <input type="search" id="activity-filter" placeholder="Market or account" autocomplete="off" spellcheck="false" />
+            </label>
+            <button type="button" class="ghost-btn" id="activity-filter-clear" aria-label="Clear trade filter">Clear</button>
+          </div>
+
+          <div id="accounts-identity" class="accounts-identity" hidden>
+            <div class="accounts-identity-top">
+              <p class="accounts-kicker">Accounts</p>
+              <p id="accounts-count-badge" class="accounts-count-badge">—</p>
+            </div>
+            <h2 id="accounts-title">Participant directory</h2>
+            <p class="accounts-sub">Participant accounts and asset holdings</p>
+          </div>
+
+          <div class="accounts-toolbar" id="accounts-toolbar" hidden>
+            <label for="accounts-search">Search accounts
+              <input type="search" id="accounts-search" placeholder="Name or ID" autocomplete="off" spellcheck="false" />
+            </label>
+            <label for="accounts-status-filter">Status
+              <select id="accounts-status-filter">
+                <option value="all">All</option>
+                <option value="active">Active</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+            <button type="button" class="ghost-btn" id="accounts-filter-clear" aria-label="Clear account filters">Clear</button>
+            <p class="accounts-filter-empty" id="accounts-filter-empty" data-visible="false" role="status">No accounts match the current filters.</p>
+          </div>
+
+          <aside id="account-detail" class="account-detail" hidden>
+            <p class="account-detail-kicker">Selected account</p>
+            <div id="account-detail-empty" class="account-detail-empty">Select an account to inspect holdings.</div>
+            <div id="account-detail-body" class="account-detail-body" hidden></div>
+          </aside>
+
+          <div id="market-identity" class="market-identity" hidden>
+            <div class="market-identity-top">
+              <p class="market-kicker">Markets</p>
+              <p id="market-live-badge" class="market-live-badge" data-state="connecting">CONNECTING</p>
+            </div>
+            <h2 id="market-title">BTC / USD</h2>
+            <p class="market-sub">Real-time depth</p>
+          </div>
+
+          <section id="balance-view" class="panel" aria-label="Account balance"></section>
+          <section id="orderbook-view" class="panel" aria-label="Order book"></section>
+          <section id="health-view" class="panel" aria-label="System health"></section>
+          <section id="metrics-view" class="panel" aria-label="Platform metrics"></section>
+        </main>
+      </div>
+    </div>
+
+    <div class="toast-host" id="toast-host" aria-live="polite" aria-relevant="additions"></div>
+    <div class="command-palette-backdrop" id="command-palette-backdrop" data-open="false" hidden>
+      <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" id="command-palette">
+        <input type="search" class="command-palette-input" id="command-palette-input" placeholder="Navigate or switch theme…" autocomplete="off" spellcheck="false" aria-label="Filter commands" />
+        <ul class="command-palette-list" id="command-palette-list" role="listbox" aria-label="Commands"></ul>
+        <p class="command-palette-empty" id="command-palette-empty" hidden>No matching commands</p>
+      </div>
+    </div>
     <script type="module" src="js/app.js"></script>
   </body>
 </html>
