@@ -9,6 +9,7 @@ import {
 } from "../domain/settlement.js";
 import { insertBalancedEntry } from "./ledgerRepository.js";
 import type { PostingInput } from "../domain/ledger.js";
+import { assertOpen } from "./accountsRepository.js";
 
 interface BalanceRow {
   account_id: string;
@@ -36,8 +37,6 @@ function balanceKey(accountId: string, asset: string): string {
   return `${accountId}\u0000${asset}`;
 }
 
-// Given as working infrastructure — use these from within the functions
-// below rather than querying account_balances directly.
 export async function readBalance(trx: Knex.Transaction, accountId: string, asset: string): Promise<AccountBalance> {
   const row = await trx<BalanceRow>("account_balances").where({ account_id: accountId, asset }).first();
   return row ? { available: BigInt(row.available), held: BigInt(row.held) } : { available: 0n, held: 0n };
@@ -59,6 +58,7 @@ export async function getBalance(db: Knex, accountId: string, asset: string): Pr
 
 export async function hold(db: Knex, accountId: string, asset: string, amount: bigint): Promise<AccountBalance> {
   return db.transaction(async (trx) => {
+    await assertOpen(trx, accountId);
     const current = await readBalance(trx, accountId, asset);
     const next = applyHold(current, amount, accountId, asset);
     await writeBalance(trx, accountId, asset, next);
@@ -75,8 +75,8 @@ export async function release(db: Knex, accountId: string, asset: string, amount
   });
 }
 
-/** Called inside withIdempotency's transaction — increases available only. */
 export async function deposit(trx: Executor, accountId: string, asset: string, amount: bigint): Promise<AccountBalance> {
+  await assertOpen(trx as Knex, accountId);
   const current = await readBalance(trx as Knex.Transaction, accountId, asset);
   const next: AccountBalance = {
     available: current.available + amount,
@@ -86,8 +86,8 @@ export async function deposit(trx: Executor, accountId: string, asset: string, a
   return next;
 }
 
-/** Called inside withIdempotency's transaction — decreases available only; never consumes held. */
 export async function withdraw(trx: Executor, accountId: string, asset: string, amount: bigint): Promise<AccountBalance> {
+  await assertOpen(trx as Knex, accountId);
   const current = await readBalance(trx as Knex.Transaction, accountId, asset);
   if (amount > current.available) {
     throw new InsufficientAvailableError(accountId, asset);
@@ -111,11 +111,6 @@ export interface TradeSettlement {
   cashAmount: bigint;
 }
 
-/**
- * Atomically settle a trade: consume seller asset hold + buyer cash hold,
- * credit buyer asset available + seller cash available, and post one balanced
- * multi-asset ledger entry — all in a single Knex transaction.
- */
 export async function settleTrade(db: Knex, trade: TradeSettlement): Promise<string> {
   return db.transaction(async (trx) => {
     const {
@@ -129,7 +124,11 @@ export async function settleTrade(db: Knex, trade: TradeSettlement): Promise<str
       cashAmount,
     } = trade;
 
-    // Merge overlapping (accountId, asset) keys so one write per row.
+    const participants = new Set([sellerAssetAccountId, buyerAssetAccountId, buyerCashAccountId, sellerCashAccountId]);
+    for (const accountId of participants) {
+      await assertOpen(trx, accountId);
+    }
+
     const working = new Map<string, AccountBalance>();
 
     async function balanceFor(accountId: string, assetCode: string): Promise<AccountBalance> {
@@ -152,7 +151,6 @@ export async function settleTrade(db: Knex, trade: TradeSettlement): Promise<str
       throw new InsufficientHeldError(buyerCashAccountId, cashAsset);
     }
 
-    // Consume holds / credit counterparties (mutate merged working set).
     sellerAsset.held -= quantity;
 
     const buyerAsset = await balanceFor(buyerAssetAccountId, asset);
@@ -206,7 +204,6 @@ async function loadIdempotentResult<T extends Json>(db: Knex, key: string, hash:
   return JSON.parse(existing.response_json) as T;
 }
 
-// Durable replay plus process-local single-flight for concurrent same-key callers.
 export async function withIdempotency<T extends Json>(
   db: Knex,
   key: string,

@@ -37,8 +37,6 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
     return;
   }
 
-  // Defaults to "limit" when a price is present and no explicit type is given (preserving every
-  // existing test's behavior, none of which send orderType), or "market" when no price is given.
   const orderType = (rawOrderType as "limit" | "market" | "stop" | "stop_limit" | undefined) ?? (price !== undefined ? "limit" : "market");
 
   if (price !== undefined && (typeof price !== "string" || !INTEGER.test(price))) {
@@ -51,9 +49,6 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
     return;
   }
 
-  // A plain stop order legitimately has no price, only a stopPrice — skip the price-required
-  // rejection for it. A stop_limit order DOES require both price (its limit) and stopPrice, so it
-  // gets no exception here.
   if (price === undefined && timeInForce !== "IOC" && timeInForce !== "FOK" && orderType !== "stop") {
     res.status(HttpStatus.BAD_REQUEST).json({ error: { code: "PRICE_REQUIRED", details: [{ message: "a resting order requires a limit price" }] } });
     return;
@@ -84,9 +79,6 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
   }
 
   const orderSide = side as Side;
-  // IOC/FOK never rest; market (no price) never rests; GTC/POST_ONLY limit may rest.
-  // Stop without price: willRest false. Stop-limit with price: may count as resting commitment
-  // (including while dormant) per willRest — reservation kept while marketOf still tracks it.
   const willRest = orderPrice !== undefined && timeInForce !== "IOC" && timeInForce !== "FOK";
 
   const orderId = uuidv4();
@@ -118,12 +110,10 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
   engine.recordTrades(market, result.trades, orderSide);
   publishBookChange(market, bookBefore, engine.depth(market));
 
-  // STP: resting maker gone — take-once release of that maker's reservation (not the aggressor's).
   for (const cancellation of result.cancellations) {
     risk.releaseReservation(cancellation.orderId);
   }
 
-  // Fully filled makers leave the book — release their open reservations.
   for (const trade of result.trades) {
     const makerId = orderSide === "buy" ? trade.sellOrderId : trade.buyOrderId;
     if (makerId === orderId) continue;
@@ -132,8 +122,6 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
     }
   }
 
-  // Incoming reservation: keep only while still live (resting on book or dormant stop tracked by marketOf).
-  // Roll back on matching rejection, immediate full fill, or any non-live outcome.
   if (willRest) {
     const stillLive = result.restingOrder !== null || engine.marketOf(orderId) !== undefined;
     if (result.rejected || !stillLive) {
