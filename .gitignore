@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Test / tooling output
+test-results.xml
+*.log
+
+# Local backups (keep competition .env and main.sqlite3 tracked)
+backups/
+*.bak
