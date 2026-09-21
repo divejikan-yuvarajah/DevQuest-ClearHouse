@@ -4,7 +4,6 @@ import HttpStatus from "../enums/httpStatus.js";
 import * as engine from "../services/matchingEngine.js";
 import * as risk from "../services/riskRegistry.js";
 import { publishBookChange } from "../services/marketFeed.js";
-import { firstViolatedRule, reserve, release as releaseRisk } from "../domain/risk.js";
 import type { Side, TimeInForce } from "../domain/orderBook.js";
 import db from "../../db/db-config.js";
 import { getStatus } from "../repositories/accountsRepository.js";
@@ -78,11 +77,6 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
     return;
   }
 
-  if (risk.isKillSwitchEngaged()) {
-    res.status(HttpStatus.CONFLICT).json({ error: { code: "KILL_SWITCH_ENGAGED", details: [] } });
-    return;
-  }
-
   const accountStatus = await getStatus(db, accountId);
   if (accountStatus === "closed") {
     res.status(HttpStatus.CONFLICT).json({ error: { code: "ACCOUNT_CLOSED", details: [] } });
@@ -90,21 +84,22 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
   }
 
   const orderSide = side as Side;
+  // IOC/FOK never rest; market (no price) never rests; GTC/POST_ONLY limit may rest.
+  // Stop without price: willRest false. Stop-limit with price: may count as resting commitment
+  // (including while dormant) per willRest — reservation kept while marketOf still tracks it.
   const willRest = orderPrice !== undefined && timeInForce !== "IOC" && timeInForce !== "FOK";
 
-  const state = risk.getState(accountId);
-  const limits = risk.getLimits(accountId);
-  const violation = firstViolatedRule(state, limits, { side: orderSide, price: orderPrice, quantity: orderQuantity, willRest });
-
-  if (violation) {
-    res.status(HttpStatus.CONFLICT).json({ error: { code: violation, details: [] } });
-    return;
-  }
-
   const orderId = uuidv4();
-  if (willRest) {
-    risk.setState(accountId, reserve(state, { side: orderSide, price: orderPrice, quantity: orderQuantity, willRest }));
-    risk.registerReservation(orderId, { accountId, side: orderSide, quantity: orderQuantity });
+  const admit = risk.tryAdmit(accountId, orderId, {
+    side: orderSide,
+    price: orderPrice,
+    quantity: orderQuantity,
+    willRest,
+  });
+
+  if (!admit.ok) {
+    res.status(HttpStatus.CONFLICT).json({ error: { code: admit.code, details: [] } });
+    return;
   }
 
   engine.rememberOrder(orderId, accountId);
@@ -123,24 +118,30 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
   engine.recordTrades(market, result.trades, orderSide);
   publishBookChange(market, bookBefore, engine.depth(market));
 
-  // STP removed live resting makers — release their existing risk reservations (same path as DELETE cancel).
+  // STP: resting maker gone — take-once release of that maker's reservation (not the aggressor's).
   for (const cancellation of result.cancellations) {
-    const reservation = risk.takeReservation(cancellation.orderId);
-    if (reservation) {
-      risk.setState(
-        reservation.accountId,
-        releaseRisk(risk.getState(reservation.accountId), reservation.side, reservation.quantity)
-      );
+    risk.releaseReservation(cancellation.orderId);
+  }
+
+  // Fully filled makers leave the book — release their open reservations.
+  for (const trade of result.trades) {
+    const makerId = orderSide === "buy" ? trade.sellOrderId : trade.buyOrderId;
+    if (makerId === orderId) continue;
+    if (engine.marketOf(makerId) === undefined) {
+      risk.releaseReservation(makerId);
+    }
+  }
+
+  // Incoming reservation: keep only while still live (resting on book or dormant stop tracked by marketOf).
+  // Roll back on matching rejection, immediate full fill, or any non-live outcome.
+  if (willRest) {
+    const stillLive = result.restingOrder !== null || engine.marketOf(orderId) !== undefined;
+    if (result.rejected || !stillLive) {
+      risk.releaseReservation(orderId);
     }
   }
 
   if (result.rejected) {
-    if (willRest) {
-      const reservation = risk.takeReservation(orderId);
-      if (reservation) {
-        risk.setState(accountId, releaseRisk(risk.getState(accountId), reservation.side, reservation.quantity));
-      }
-    }
     res.status(HttpStatus.CONFLICT).json({ error: { code: result.rejectionReason, details: [] } });
     return;
   }
@@ -167,10 +168,7 @@ const remove = async (req: Request<{ orderId: string }>, res: Response): Promise
   }
 
   if (outcome.cancelled) {
-    const reservation = risk.takeReservation(req.params.orderId);
-    if (reservation) {
-      risk.setState(reservation.accountId, releaseRisk(risk.getState(reservation.accountId), reservation.side, reservation.quantity));
-    }
+    risk.releaseReservation(req.params.orderId);
   }
 
   res.status(HttpStatus.OK).json({ data: { orderId: req.params.orderId, cancelled: outcome.cancelled }, meta: {} });
