@@ -8,12 +8,26 @@ import {
 } from "../domain/matching.js";
 
 const books = new Map<string, OrderBook>();
-const registry = new Map<string, { market: string; side: Side }>(); // orderId -> where to find it, for cancel
+const registry = new Map<string, { market: string; side: Side }>(); // live resting only
 
 let sequenceCounter = 0;
 function nextSequence(): number {
   sequenceCounter += 1;
   return sequenceCounter;
+}
+
+/** Re-entrant per-market critical-section depth (sync mutations; nested stop drain OK). */
+const marketLockDepth = new Map<string, number>();
+
+function withMarketLock<T>(market: string, fn: () => T): T {
+  const depth = marketLockDepth.get(market) ?? 0;
+  marketLockDepth.set(market, depth + 1);
+  try {
+    return fn();
+  } finally {
+    if (depth === 0) marketLockDepth.delete(market);
+    else marketLockDepth.set(market, depth);
+  }
 }
 
 function bookFor(market: string): OrderBook {
@@ -29,6 +43,7 @@ interface PendingStop {
   order: IncomingOrder;
 }
 
+/** Dormant stops — not on the active book, do not affect BBO/depth. */
 const pendingStops = new Map<string, PendingStop[]>();
 const lastTradePrices = new Map<string, bigint>();
 
@@ -44,10 +59,11 @@ function toLiveOrder(order: IncomingOrder): IncomingOrder {
       ...order,
       orderType: "market",
       price: undefined,
-      timeInForce: order.timeInForce === "POST_ONLY" ? "GTC" : order.timeInForce,
+      // market stop must never rest
+      timeInForce: order.timeInForce === "POST_ONLY" ? "IOC" : order.timeInForce === "GTC" ? "IOC" : order.timeInForce,
     };
   }
-  // stop_limit → limit at its limit price
+  // stop_limit → limit at its own stored limit price (not stopPrice / last trade)
   return {
     ...order,
     orderType: "limit",
@@ -68,7 +84,6 @@ function applyResultToRegistry(market: string, side: Side, orderId: string, resu
   for (const trade of result.trades) {
     const makerId = side === "buy" ? trade.sellOrderId : trade.buyOrderId;
     if (makerId !== orderId) {
-      // Maker may be fully filled and gone from the book.
       const location = registry.get(makerId);
       if (location) {
         const stillThere = bookFor(location.market).sideFor(location.side).findById(makerId);
@@ -91,6 +106,7 @@ function executeLive(market: string, order: IncomingOrder): SubmitResult {
   return result;
 }
 
+/** Iterative trigger queue: original submission order, cascade-safe, once-only (removed on fire). */
 function drainTriggeredStops(market: string): void {
   const pending = pendingStops.get(market);
   if (!pending || pending.length === 0) return;
@@ -108,56 +124,68 @@ function drainTriggeredStops(market: string): void {
       pending.splice(i, 1);
       executeLive(market, toLiveOrder(candidate.order));
       progressed = true;
-      // Restart from the front so original submission order is preserved among remaining.
       break;
     }
   }
+  if (pending.length === 0) pendingStops.delete(market);
 }
 
 export function placeOrder(market: string, order: Omit<IncomingOrder, "sequence">): SubmitResult {
-  const sequenced: IncomingOrder = { ...order, sequence: nextSequence() };
+  return withMarketLock(market, () => {
+    const sequenced: IncomingOrder = { ...order, sequence: nextSequence() };
 
-  if (order.orderType === "stop" || order.orderType === "stop_limit") {
-    if (!order.stopPrice) {
-      return { trades: [], cancellations: [], restingOrder: null, rejected: true, rejectionReason: "would_cross" };
+    if (order.orderType === "stop" || order.orderType === "stop_limit") {
+      if (!order.stopPrice) {
+        return { trades: [], cancellations: [], restingOrder: null, rejected: true, rejectionReason: "would_cross" };
+      }
+
+      if (!shouldTriggerStop(market, order.side, order.stopPrice)) {
+        const list = pendingStops.get(market) ?? [];
+        list.push({ order: sequenced });
+        pendingStops.set(market, list);
+        return { trades: [], cancellations: [], restingOrder: null, rejected: false };
+      }
+
+      const result = executeLive(market, toLiveOrder(sequenced));
+      drainTriggeredStops(market);
+      return result;
     }
 
-    if (!shouldTriggerStop(market, order.side, order.stopPrice)) {
-      const list = pendingStops.get(market) ?? [];
-      list.push({ order: sequenced });
-      pendingStops.set(market, list);
-      return { trades: [], cancellations: [], restingOrder: null, rejected: false };
-    }
-
-    const result = executeLive(market, toLiveOrder(sequenced));
+    const result = executeLive(market, sequenced);
     drainTriggeredStops(market);
     return result;
-  }
-
-  const result = executeLive(market, sequenced);
-  drainTriggeredStops(market);
-  return result;
+  });
 }
 
 export function cancel(orderId: string): { found: boolean; cancelled: boolean } {
   const location = registry.get(orderId);
   if (!location) {
-    // May be a pending stop
     for (const [market, list] of pendingStops) {
       const index = list.findIndex((entry) => entry.order.id === orderId);
       if (index !== -1) {
-        list.splice(index, 1);
-        if (list.length === 0) pendingStops.delete(market);
-        return { found: true, cancelled: true };
+        return withMarketLock(market, () => {
+          // Re-find under lock in case another op drained/cancelled it.
+          const pending = pendingStops.get(market);
+          if (!pending) return { found: false, cancelled: false };
+          const i = pending.findIndex((entry) => entry.order.id === orderId);
+          if (i === -1) return { found: false, cancelled: false };
+          pending.splice(i, 1);
+          if (pending.length === 0) pendingStops.delete(market);
+          return { found: true, cancelled: true };
+        });
       }
     }
     return { found: false, cancelled: false };
   }
 
-  const book = bookFor(location.market);
-  const { cancelled } = cancelOrder(book, location.side, orderId);
-  registry.delete(orderId);
-  return { found: true, cancelled: cancelled !== null };
+  return withMarketLock(location.market, () => {
+    const still = registry.get(orderId);
+    if (!still) return { found: false, cancelled: false };
+    const book = bookFor(still.market);
+    const { cancelled } = cancelOrder(book, still.side, orderId);
+    registry.delete(orderId);
+    return { found: true, cancelled: cancelled !== null };
+  });
 }
 
 export function bestPrices(market: string): { bestBid: string | null; bestAsk: string | null } {
@@ -168,8 +196,7 @@ export function bestPrices(market: string): { bestBid: string | null; bestAsk: s
   };
 }
 
-// Aggregated depth for the dashboard: one entry per price level, best price first, with the remaining
-// (unfilled) quantity of every resting order at that price summed.
+// Aggregated depth: one entry per price level, best price first (via canonical snapshot order).
 export function depth(market: string): { bids: { price: string; quantity: string }[]; asks: { price: string; quantity: string }[] } {
   const book = books.get(market);
   const levels = (orders: { price: bigint; quantity: bigint; filled: bigint }[]): { price: string; quantity: string }[] => {
@@ -246,6 +273,7 @@ export function resetAllBooks(): void {
   sequenceCounter = 0;
   pendingStops.clear();
   lastTradePrices.clear();
+  marketLockDepth.clear();
 }
 
 export function amend(
@@ -256,16 +284,20 @@ export function amend(
   const location = registry.get(orderId);
   if (!location) return { found: false, amended: null };
 
-  const book = bookFor(location.market);
-  const { amended } = amendOrder(book, location.side, orderId, newPrice, newQuantity, nextSequence());
-  if (!amended) {
-    // Order may have disappeared between lookup and amend, or invalid quantity.
-    const stillThere = book.sideFor(location.side).findById(orderId);
-    if (!stillThere) {
-      registry.delete(orderId);
-      return { found: false, amended: null };
+  return withMarketLock(location.market, () => {
+    const still = registry.get(orderId);
+    if (!still) return { found: false, amended: null };
+
+    const book = bookFor(still.market);
+    const { amended } = amendOrder(book, still.side, orderId, newPrice, newQuantity, nextSequence());
+    if (!amended) {
+      const stillThere = book.sideFor(still.side).findById(orderId);
+      if (!stillThere) {
+        registry.delete(orderId);
+        return { found: false, amended: null };
+      }
+      return { found: true, amended: null };
     }
-    return { found: true, amended: null };
-  }
-  return { found: true, amended };
+    return { found: true, amended };
+  });
 }

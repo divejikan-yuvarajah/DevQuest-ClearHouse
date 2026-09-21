@@ -42,6 +42,7 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
   const trades: Trade[] = [];
   const cancellations: Cancellation[] = [];
 
+  // POST_ONLY: reject before any book mutation if it would cross immediately.
   if (incoming.timeInForce === "POST_ONLY") {
     const best = opposite.best();
     if (best && crosses(incoming.side, incoming.price, best.price)) {
@@ -49,6 +50,7 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
     }
   }
 
+  // FOK: non-mutating liquidity preflight (excludes same-account; limit/market via availableLiquidity).
   if (incoming.timeInForce === "FOK") {
     const liquidity = opposite.availableLiquidity(incoming.price, incoming.accountId);
     if (liquidity < incoming.quantity) {
@@ -70,6 +72,7 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
       break;
     }
 
+    // STP: cancel resting maker, keep aggressor, continue (not a trade; not an IOC-remainder cancel).
     if (best.accountId === incoming.accountId) {
       opposite.removeFront();
       cancellations.push({ orderId: best.id, reason: "self_trade_prevention" });

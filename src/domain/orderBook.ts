@@ -17,12 +17,12 @@ function remaining(order: RestingOrder): bigint {
 }
 
 /**
- * Price-level map + sorted price index so inserts are O(levels) rather than O(orders).
+ * Indexed binary heap: O(log n) insert / remove-best / remove-by-id,
+ * O(1) best and same-priority quantity updates. Comparator is price-time.
  */
 class BookSide {
-  private readonly levels = new Map<string, RestingOrder[]>();
-  /** Prices sorted best-first according to betterPrice. */
-  private readonly prices: bigint[] = [];
+  private readonly heap: RestingOrder[] = [];
+  private readonly indexById = new Map<string, number>();
 
   constructor(
     private readonly betterPrice: (a: bigint, b: bigint) => boolean,
@@ -30,108 +30,105 @@ class BookSide {
     private readonly crossesLimit: (restingPrice: bigint, limit: bigint) => boolean
   ) {}
 
-  insert(order: RestingOrder): void {
-    const key = order.price.toString();
-    let queue = this.levels.get(key);
-    if (!queue) {
-      queue = [];
-      this.levels.set(key, queue);
-      const index = this.priceInsertIndex(order.price);
-      this.prices.splice(index, 0, order.price);
+  private isBetter(a: RestingOrder, b: RestingOrder): boolean {
+    if (a.price !== b.price) return this.betterPrice(a.price, b.price);
+    return a.sequence < b.sequence;
+  }
+
+  private swap(i: number, j: number): void {
+    const a = this.heap[i]!;
+    const b = this.heap[j]!;
+    this.heap[i] = b;
+    this.heap[j] = a;
+    this.indexById.set(b.id, i);
+    this.indexById.set(a.id, j);
+  }
+
+  private siftUp(index: number): void {
+    let i = index;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!this.isBetter(this.heap[i]!, this.heap[parent]!)) break;
+      this.swap(i, parent);
+      i = parent;
     }
-    queue.push(order);
+  }
+
+  private siftDown(index: number): void {
+    let i = index;
+    const n = this.heap.length;
+    for (;;) {
+      const left = i * 2 + 1;
+      const right = left + 1;
+      let best = i;
+      if (left < n && this.isBetter(this.heap[left]!, this.heap[best]!)) best = left;
+      if (right < n && this.isBetter(this.heap[right]!, this.heap[best]!)) best = right;
+      if (best === i) break;
+      this.swap(i, best);
+      i = best;
+    }
+  }
+
+  private removeAt(index: number): RestingOrder {
+    const removed = this.heap[index]!;
+    this.indexById.delete(removed.id);
+    const last = this.heap.pop();
+    if (last === undefined || index === this.heap.length) {
+      return removed;
+    }
+    this.heap[index] = last;
+    this.indexById.set(last.id, index);
+    this.siftUp(index);
+    this.siftDown(index);
+    return removed;
+  }
+
+  insert(order: RestingOrder): void {
+    const index = this.heap.length;
+    this.heap.push(order);
+    this.indexById.set(order.id, index);
+    this.siftUp(index);
   }
 
   best(): RestingOrder | undefined {
-    if (this.prices.length === 0) return undefined;
-    const queue = this.levels.get(this.prices[0]!.toString());
-    return queue?.[0];
+    return this.heap[0];
   }
 
   removeById(id: string): RestingOrder | undefined {
-    for (let priceIndex = 0; priceIndex < this.prices.length; priceIndex += 1) {
-      const price = this.prices[priceIndex]!;
-      const key = price.toString();
-      const queue = this.levels.get(key);
-      if (!queue) continue;
-      const index = queue.findIndex((order) => order.id === id);
-      if (index === -1) continue;
-      const [removed] = queue.splice(index, 1);
-      if (queue.length === 0) {
-        this.levels.delete(key);
-        this.prices.splice(priceIndex, 1);
-      }
-      return removed;
-    }
-    return undefined;
+    const index = this.indexById.get(id);
+    if (index === undefined) return undefined;
+    return this.removeAt(index);
   }
 
   removeFront(): void {
-    if (this.prices.length === 0) return;
-    const price = this.prices[0]!;
-    const key = price.toString();
-    const queue = this.levels.get(key);
-    if (!queue) return;
-    queue.shift();
-    if (queue.length === 0) {
-      this.levels.delete(key);
-      this.prices.shift();
-    }
+    if (this.heap.length === 0) return;
+    this.removeAt(0);
   }
 
   findById(id: string): RestingOrder | undefined {
-    for (const price of this.prices) {
-      const queue = this.levels.get(price.toString());
-      if (!queue) continue;
-      const found = queue.find((order) => order.id === id);
-      if (found) return found;
-    }
-    return undefined;
+    const index = this.indexById.get(id);
+    if (index === undefined) return undefined;
+    return this.heap[index];
   }
 
   availableLiquidity(limit: bigint | undefined, excludeAccountId: string): bigint {
     let total = 0n;
-    for (const price of this.prices) {
-      if (limit !== undefined && !this.crossesLimit(price, limit)) {
-        break;
-      }
-      const queue = this.levels.get(price.toString());
-      if (!queue) continue;
-      for (const order of queue) {
-        if (order.accountId === excludeAccountId) continue;
-        total += remaining(order);
-      }
+    for (const order of this.heap) {
+      if (limit !== undefined && !this.crossesLimit(order.price, limit)) continue;
+      if (order.accountId === excludeAccountId) continue;
+      total += remaining(order);
     }
     return total;
   }
 
+  /** Canonical price-time order (best price first, then earlier sequence); defensive copies. */
   snapshot(): RestingOrder[] {
-    const out: RestingOrder[] = [];
-    for (const price of this.prices) {
-      const queue = this.levels.get(price.toString());
-      if (!queue) continue;
-      for (const order of queue) {
-        out.push({ ...order });
-      }
-    }
-    return out;
-  }
-
-  private priceInsertIndex(price: bigint): number {
-    let low = 0;
-    let high = this.prices.length;
-    while (low < high) {
-      const mid = (low + high) >> 1;
-      const midPrice = this.prices[mid]!;
-      if (this.betterPrice(price, midPrice)) {
-        high = mid;
-      } else if (price === midPrice) {
-        return mid;
-      } else {
-        low = mid + 1;
-      }
-    }
-    return low;
+    return this.heap
+      .map((order) => ({ ...order }))
+      .sort((a, b) => {
+        if (a.price !== b.price) return this.betterPrice(a.price, b.price) ? -1 : 1;
+        return a.sequence - b.sequence;
+      });
   }
 }
 

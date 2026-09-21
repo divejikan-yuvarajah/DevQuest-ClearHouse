@@ -123,6 +123,17 @@ const create = async (req: Request<unknown, unknown, CreateOrderBody>, res: Resp
   engine.recordTrades(market, result.trades, orderSide);
   publishBookChange(market, bookBefore, engine.depth(market));
 
+  // STP removed live resting makers — release their existing risk reservations (same path as DELETE cancel).
+  for (const cancellation of result.cancellations) {
+    const reservation = risk.takeReservation(cancellation.orderId);
+    if (reservation) {
+      risk.setState(
+        reservation.accountId,
+        releaseRisk(risk.getState(reservation.accountId), reservation.side, reservation.quantity)
+      );
+    }
+  }
+
   if (result.rejected) {
     if (willRest) {
       const reservation = risk.takeReservation(orderId);
