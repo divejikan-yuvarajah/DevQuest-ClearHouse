@@ -1,7 +1,3 @@
-// Thin wiring layer: reads the login form, calls the real API through
-// buildSignedRequestInit, and hands the responses to the render functions.
-// No business logic lives here — see dashboard.js for the parts this
-// challenge grades.
 import { renderBalance, renderOrderBook, renderRiskState, renderRiskUsage, renderAccountList, renderPortfolioSummary, renderRecentTrades, setStatus, setConnectionStatus, buildSignedRequestInit } from "./dashboard.js";
 import { LiveFeedClient, applyOrderBookDelta } from "./liveFeed.js";
 import { createHmacSigner } from "./signer.js";
@@ -25,8 +21,6 @@ async function refresh(market) {
   setStatus(document, "risk-view", "loading");
 
   try {
-    // One balance per asset in the registry; assets the account never touched are left out so an
-    // account with no funds shows the empty state rather than a table of zeros.
     const assets = await signedFetch("GET", "/api/assets", undefined);
     if (assets.status !== 200) throw new Error("assets");
     const balances = [];
@@ -65,7 +59,6 @@ async function refresh(market) {
   }
 }
 
-// The overview needs no sign-in: every account, with its holdings, is shown as soon as the page loads.
 async function getJson(path) {
   const response = await fetch(path);
   if (response.status !== 200) throw new Error(path);
@@ -109,9 +102,6 @@ document.getElementById("controls-form").addEventListener("submit", (event) => {
   void refresh(market);
 });
 
-// Optional live updates: open the page with ?feed=ws://host/path to stream instead of polling. The feed
-// is expected to send per-topic "orderbook", "balance" and "risk" snapshots and order-book deltas (see
-// liveFeed.js). The connection state is shown by setConnectionStatus.
 function startLiveFeed(url) {
   let book = { bids: [], asks: [] };
   const client = new LiveFeedClient({

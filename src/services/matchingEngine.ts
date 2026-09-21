@@ -8,7 +8,7 @@ import {
 } from "../domain/matching.js";
 
 const books = new Map<string, OrderBook>();
-const registry = new Map<string, { market: string; side: Side }>(); // live resting only
+const registry = new Map<string, { market: string; side: Side }>();
 
 let sequenceCounter = 0;
 function nextSequence(): number {
@@ -16,7 +16,6 @@ function nextSequence(): number {
   return sequenceCounter;
 }
 
-/** Re-entrant per-market critical-section depth (sync mutations; nested stop drain OK). */
 const marketLockDepth = new Map<string, number>();
 
 function withMarketLock<T>(market: string, fn: () => T): T {
@@ -43,7 +42,6 @@ interface PendingStop {
   order: IncomingOrder;
 }
 
-/** Dormant stops — not on the active book, do not affect BBO/depth. */
 const pendingStops = new Map<string, PendingStop[]>();
 const lastTradePrices = new Map<string, bigint>();
 
@@ -59,11 +57,9 @@ function toLiveOrder(order: IncomingOrder): IncomingOrder {
       ...order,
       orderType: "market",
       price: undefined,
-      // market stop must never rest
       timeInForce: order.timeInForce === "POST_ONLY" ? "IOC" : order.timeInForce === "GTC" ? "IOC" : order.timeInForce,
     };
   }
-  // stop_limit → limit at its own stored limit price (not stopPrice / last trade)
   return {
     ...order,
     orderType: "limit",
@@ -106,7 +102,6 @@ function executeLive(market: string, order: IncomingOrder): SubmitResult {
   return result;
 }
 
-/** Iterative trigger queue: original submission order, cascade-safe, once-only (removed on fire). */
 function drainTriggeredStops(market: string): void {
   const pending = pendingStops.get(market);
   if (!pending || pending.length === 0) return;
@@ -164,7 +159,6 @@ export function cancel(orderId: string): { found: boolean; cancelled: boolean } 
       const index = list.findIndex((entry) => entry.order.id === orderId);
       if (index !== -1) {
         return withMarketLock(market, () => {
-          // Re-find under lock in case another op drained/cancelled it.
           const pending = pendingStops.get(market);
           if (!pending) return { found: false, cancelled: false };
           const i = pending.findIndex((entry) => entry.order.id === orderId);
@@ -196,7 +190,6 @@ export function bestPrices(market: string): { bestBid: string | null; bestAsk: s
   };
 }
 
-// Aggregated depth: one entry per price level, best price first (via canonical snapshot order).
 export function depth(market: string): { bids: { price: string; quantity: string }[]; asks: { price: string; quantity: string }[] } {
   const book = books.get(market);
   const levels = (orders: { price: bigint; quantity: bigint; filled: bigint }[]): { price: string; quantity: string }[] => {

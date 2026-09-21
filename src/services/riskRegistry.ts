@@ -67,7 +67,6 @@ export function registerReservation(orderId: string, reservation: Reservation): 
   reservations.set(orderId, { ...reservation });
 }
 
-/** Take-once: removes and returns the reservation, or undefined if already taken / never registered. */
 export function takeReservation(orderId: string): Reservation | undefined {
   const reservation = reservations.get(orderId);
   if (!reservation) return undefined;
@@ -86,10 +85,6 @@ export type AdmitResult =
   | { ok: true }
   | { ok: false; code: RiskViolation | "KILL_SWITCH_ENGAGED" };
 
-/**
- * Atomic pre-trade gate: kill-switch → firstViolatedRule → reserve+register (sync, no await gap).
- * Two parallel callers after an await still serialize here on the event loop.
- */
 export function tryAdmit(accountId: string, orderId: string, order: OrderForRiskCheck): AdmitResult {
   if (killSwitchEngaged) {
     return { ok: false, code: "KILL_SWITCH_ENGAGED" };

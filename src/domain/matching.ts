@@ -3,7 +3,7 @@ import { OrderBook, remainingQuantity, type RestingOrder, type Side, type TimeIn
 export interface Trade {
   buyOrderId: string;
   sellOrderId: string;
-  price: bigint; // always the resting (maker) order's price
+  price: bigint;
   quantity: bigint;
 }
 
@@ -16,18 +16,18 @@ export interface IncomingOrder {
   id: string;
   accountId: string;
   side: Side;
-  price?: bigint; // absent for a market order
+  price?: bigint;
   quantity: bigint;
   timeInForce: TimeInForce;
   sequence: number;
-  orderType?: "limit" | "market" | "stop" | "stop_limit"; // defaults to "limit" (price set) or "market" (no price) when absent
-  stopPrice?: bigint; // required when orderType is "stop" or "stop_limit"
+  orderType?: "limit" | "market" | "stop" | "stop_limit";
+  stopPrice?: bigint;
 }
 
 export interface SubmitResult {
   trades: Trade[];
   cancellations: Cancellation[];
-  restingOrder: RestingOrder | null; // non-null only if quantity remains and it joined the book
+  restingOrder: RestingOrder | null;
   rejected: boolean;
   rejectionReason?: "would_cross" | "insufficient_liquidity_for_fill_or_kill";
 }
@@ -42,7 +42,6 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
   const trades: Trade[] = [];
   const cancellations: Cancellation[] = [];
 
-  // POST_ONLY: reject before any book mutation if it would cross immediately.
   if (incoming.timeInForce === "POST_ONLY") {
     const best = opposite.best();
     if (best && crosses(incoming.side, incoming.price, best.price)) {
@@ -50,7 +49,6 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
     }
   }
 
-  // FOK: non-mutating liquidity preflight (excludes same-account; limit/market via availableLiquidity).
   if (incoming.timeInForce === "FOK") {
     const liquidity = opposite.availableLiquidity(incoming.price, incoming.accountId);
     if (liquidity < incoming.quantity) {
@@ -72,7 +70,6 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
       break;
     }
 
-    // STP: cancel resting maker, keep aggressor, continue (not a trade; not an IOC-remainder cancel).
     if (best.accountId === incoming.accountId) {
       opposite.removeFront();
       cancellations.push({ orderId: best.id, reason: "self_trade_prevention" });
@@ -96,14 +93,13 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
     trades.push({
       buyOrderId: incoming.side === "buy" ? incoming.id : best.id,
       sellOrderId: incoming.side === "buy" ? best.id : incoming.id,
-      price: best.price, // always resting maker price
+      price: best.price,
       quantity: tradeQty,
     });
 
     if (remainingQuantity(best) === 0n) {
       opposite.removeFront();
     }
-    // else: maker stays at same price / FIFO position with updated filled
   }
 
   const mayRest =
@@ -116,7 +112,6 @@ export function submitOrder(book: OrderBook, incoming: IncomingOrder): SubmitRes
     return { trades, cancellations, restingOrder: null, rejected: false };
   }
 
-  // quantity stays original; filled is cumulative matched so far (do not rest only the remainder as quantity)
   const filled = incoming.quantity - remaining;
   const restingOrder: RestingOrder = {
     id: incoming.id,
@@ -170,7 +165,6 @@ export function amendOrder(
   const quantityIncreased = nextQuantity > existing.quantity;
 
   if (!priceChanged && !quantityIncreased) {
-    // Quantity decrease (or no-op): preserve exact queue position.
     existing.quantity = nextQuantity;
     return { amended: existing };
   }

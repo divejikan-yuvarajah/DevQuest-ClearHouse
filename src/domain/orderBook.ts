@@ -5,10 +5,10 @@ export interface RestingOrder {
   id: string;
   accountId: string;
   side: Side;
-  price: bigint; // resting orders always carry a limit price
+  price: bigint;
   quantity: bigint;
   filled: bigint;
-  sequence: number; // insertion order, for FIFO within a price level
+  sequence: number;
   timeInForce: TimeInForce;
 }
 
@@ -16,17 +16,12 @@ function remaining(order: RestingOrder): bigint {
   return order.quantity - order.filled;
 }
 
-/**
- * Indexed binary heap: O(log n) insert / remove-best / remove-by-id,
- * O(1) best and same-priority quantity updates. Comparator is price-time.
- */
 class BookSide {
   private readonly heap: RestingOrder[] = [];
   private readonly indexById = new Map<string, number>();
 
   constructor(
     private readonly betterPrice: (a: bigint, b: bigint) => boolean,
-    /** Whether a resting price would trade against an aggressor limit (undefined limit = market). */
     private readonly crossesLimit: (restingPrice: bigint, limit: bigint) => boolean
   ) {}
 
@@ -121,7 +116,6 @@ class BookSide {
     return total;
   }
 
-  /** Canonical price-time order (best price first, then earlier sequence); defensive copies. */
   snapshot(): RestingOrder[] {
     return this.heap
       .map((order) => ({ ...order }))
