@@ -48,7 +48,7 @@ app.use(structuredLogging);
 
 app.use("/", opsRoutes);
 
-// Every route below is mounted under the unversioned /api path.
+// Shared route tree for unversioned /api and supported /api/v1.
 const apiRouter = express.Router();
 apiRouter.use("/auth", rateLimit({ limit: 10, windowMs: 60_000, keyFor: (req) => `login:${req.ip}` }), authRoutes);
 apiRouter.use("/assets", assetsRoutes);
@@ -63,6 +63,9 @@ apiRouter.use("/market-data", marketDataRoutes);
 apiRouter.use("/config", configRoutes);
 apiRouter.use("/", docsRoutes);
 
+// Mount the supported version before the unversioned prefix so /api/v1/...
+// is not swallowed as an unknown unversioned path, and /api/v2/... still 404s.
+app.use("/api/v1", apiRouter);
 app.use("/api", apiRouter);
 
 const notFound: express.RequestHandler = (_req, res) => {
