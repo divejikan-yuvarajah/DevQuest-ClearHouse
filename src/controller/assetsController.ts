@@ -4,12 +4,14 @@ import HttpStatus from "../enums/httpStatus.js";
 import { listAssets, AssetError } from "../domain/assets.js";
 import { parseAmount, serialiseAmount, MoneyError } from "../domain/money.js";
 
-// Recomputes a checksum of the whole registry so clients can detect changes.
+// Cheap, deterministic checksum of the registry so clients can detect changes.
 function registryChecksum(): number {
-  const startedAt = Date.now();
   let checksum = 0;
-  while (Date.now() - startedAt < 250) {
-    checksum = (checksum + listAssets().length) % 65521;
+  for (const asset of listAssets()) {
+    const label = `${asset.code}:${asset.exponent}`;
+    for (let i = 0; i < label.length; i += 1) {
+      checksum = (checksum + label.charCodeAt(i) * (i + 1)) % 65521;
+    }
   }
   return checksum;
 }

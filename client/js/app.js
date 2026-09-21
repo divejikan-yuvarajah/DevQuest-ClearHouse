@@ -19,6 +19,7 @@ async function refresh(market) {
   setStatus(document, "balance-view", "loading");
   setStatus(document, "orderbook-view", "loading");
   setStatus(document, "risk-view", "loading");
+  setStatus(document, "risk-usage-view", "loading");
 
   try {
     const assets = await signedFetch("GET", "/api/assets", undefined);
@@ -53,9 +54,11 @@ async function refresh(market) {
       renderRiskUsage(document, risk.body.data, risk.body.data.limits);
     } else {
       setStatus(document, "risk-view", "error", "Could not load risk state");
+      setStatus(document, "risk-usage-view", "error", "Could not load risk usage");
     }
   } catch {
     setStatus(document, "risk-view", "error", "Could not load risk state");
+    setStatus(document, "risk-usage-view", "error", "Could not load risk usage");
   }
 }
 

@@ -4,8 +4,7 @@ import db from "../../db/db-config.js";
 import HttpStatus from "../enums/httpStatus.js";
 import { AccountType, UnbalancedEntryError, type PostingInput } from "../domain/ledger.js";
 import { postEntry, reverseEntry, deriveBalance, statementPage, trialBalance } from "../repositories/ledgerRepository.js";
-import { closeAccount, AccountHasBalanceError } from "../repositories/accountsRepository.js";
-import { NotImplementedError } from "../domain/notImplemented.js";
+import { closeAccount, AccountHasBalanceError, listAccountsWithBalances } from "../repositories/accountsRepository.js";
 
 interface CreateAccountBody {
   type?: string;
@@ -127,8 +126,9 @@ const close = async (req: Request<{ accountId: string }>, res: Response): Promis
   }
 };
 
-const listAccounts = async (_req: Request, _res: Response): Promise<void> => {
-  throw new NotImplementedError("listAccounts");
+const listAccounts = async (_req: Request, res: Response): Promise<void> => {
+  const accounts = await listAccountsWithBalances(db);
+  res.status(HttpStatus.OK).json({ data: accounts, meta: {} });
 };
 
 export default { createAccount, createEntry, reverse, getBalance, getStatement, getTrialBalance, close, listAccounts };
